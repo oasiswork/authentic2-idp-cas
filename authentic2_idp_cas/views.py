@@ -8,7 +8,7 @@ from xml.etree import ElementTree as ET
 from django.http import HttpResponseRedirect, HttpResponseBadRequest, \
     HttpResponse, HttpResponseNotAllowed
 from django.core.urlresolvers import reverse
-from django.contrib.auth.views import redirect_to_login, logout
+from django.contrib.auth.views import redirect_to_login
 from django.utils.http import urlquote, urlencode
 from django.conf.urls import patterns, url
 from django.conf import settings

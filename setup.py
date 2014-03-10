@@ -10,11 +10,10 @@ setup(name='authentic2-idp-cas',
         author_email="info@entrouvert.com",
         packages=find_packages(os.path.dirname(__file__) or '.'),
         install_requires=[
-            'djangorestframework',
         ],
         entry_points={
             'authentic2.plugin': [
-                'authentic-idp-cas = authentic2_idp_cas:Plugin',
+                'authentic2-idp-cas = authentic2_idp_cas:Plugin',
             ],
         },
 )

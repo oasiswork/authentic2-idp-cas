@@ -1,6 +1,7 @@
 from django.utils.timezone import now
 from django.template.loader import render_to_string
 
+__version__ = '1.0'
 
 class Plugin(object):
     def get_before_urls(self):

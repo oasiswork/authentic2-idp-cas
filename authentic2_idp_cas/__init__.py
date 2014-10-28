@@ -1,5 +1,6 @@
-from django.utils.timezone import now
 from django.template.loader import render_to_string
+
+from . import utils
 
 __version__ = '1.0'
 
@@ -12,22 +13,15 @@ class Plugin(object):
         return [__name__]
 
     def logout_list(self, request):
-        from . import models
-
-        qs = models.CasService.objects.filter(accesstoken__user=request.user,
-                accesstoken__expires__gt=now(), logout_url__isnull=False) \
-                .distinct()
-
-        l = []
-        for client in qs:
-            name = client.name
-            url = client.get_logout_url()
+        fragments = []
+        for name, logout in utils.get_logout_urls(request):
+            url = logout.get_logout_url()
             ctx = {
-                'needs_iframe': client.logout_use_iframe,
+                'needs_iframe': logout.logout_use_iframe,
                 'name': name,
                 'url': url,
-                'iframe_timeout': client.logout_use_iframe_timeout,
+                'iframe_timeout': logout.logout_use_iframe_timeout,
             }
-            content = render_to_string('idp/saml/logout_fragment.html', ctx)
-            l.append(content)
-        return l
+            content = render_to_string('authentic2_idp_cas/logout_fragment.html', ctx)
+            fragments.append(content)
+        return fragments

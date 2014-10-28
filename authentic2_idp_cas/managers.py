@@ -19,4 +19,15 @@ class CasTicketQuerySet(query.QuerySet):
         qs = self.filter(creation__lt=now()-delta)
         qs.delete()
 
+
+class CasServiceQuerySet(query.QuerySet):
+    def for_domain(self, domain):
+        q = query.Q(domain=domain)
+        parts = domain.split('.')
+        for i in range(1, len(parts)):
+            q |= query.Q(domain='.%s' % '.'.join(parts[i:]))
+        return self.filter(q).order_by('-domain')
+
+CasServiceManager = managers.PassThroughManager.for_queryset_class(CasServiceQuerySet)
+
 CasTicketManager = managers.PassThroughManager.for_queryset_class(CasTicketQuerySet)

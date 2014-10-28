@@ -1,8 +1,6 @@
 import urlparse
 import logging
-import random
 import datetime
-import string
 from xml.etree import ElementTree as ET
 
 from django.http import HttpResponseRedirect, HttpResponseBadRequest, \
@@ -21,14 +19,12 @@ from constants import SERVICE_PARAM, RENEW_PARAM, GATEWAY_PARAM, ID_PARAM, \
     CANCEL_PARAM, SERVICE_TICKET_PREFIX, TICKET_PARAM, \
     CAS10_VALIDATION_FAILURE, CAS10_VALIDATION_SUCCESS, PGT_URL_PARAM, \
     INVALID_REQUEST_ERROR, INVALID_TICKET_ERROR, INVALID_SERVICE_ERROR, \
-    INTERNAL_ERROR, CAS20_VALIDATION_FAILURE, CAS20_VALIDATION_SUCCESS, \
+    INTERNAL_ERROR, CAS20_VALIDATION_FAILURE, \
     CAS_NAMESPACE, USER_ELT, SERVICE_RESPONSE_ELT, AUTHENTICATION_SUCCESS_ELT
 
-from . import models
+from . import models, utils, app_settings
 
 logger = logging.getLogger(__name__)
-
-ALPHABET = string.letters+string.digits+'-'
 
 SAML_RESPONSE_TEMPLATE = '''<?xml version="1.0" encoding="UTF-8"?>
 <SOAP-ENV:Envelope SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
@@ -79,21 +75,18 @@ class CasProvider(object):
                 url('^logout/$', self.logout))
     url = property(get_url)
 
-    def make_id(self, prefix='', length=29):
-        l = length-len(prefix)
-        content = ( random.SystemRandom().choice(ALPHABET) for x in range(l) )
-        return prefix + ''.join(content)
-
     def create_service_ticket(self, service, renew=False, validity=True,
-            expire=None, user=None):
+            expire=None, user=None, session_key=''):
         '''Create a fresh service ticket'''
         validity = validity and not renew
-        return CasTicket.objects.create(ticket_id=self.make_id(prefix='ST-'),
+        return CasTicket.objects.create(
+            ticket_id=utils.make_id(prefix='ST-'),
             service=service,
             renew=renew,
             validity=validity,
             expire=None,
-            user=user)
+            user=user,
+            session_key=session_key)
 
     def check_authentication(self, request, st):
         '''
@@ -120,11 +113,17 @@ class CasProvider(object):
         if not service.startswith('http://') and not \
                 service.startswith('https://'):
             return self.failure(request, 'service is not an HTTP or HTTPS URL')
-        scheme, domain, x, x, x, x = urlparse.urlparse(service)
-        try:
-            cas_service = models.CasService.get(domain=domain)
-        except models.CasService.DoesNotExist:
-            self.failure(request, 'service %r is not allowed' % service)
+
+        # verify service is authorized !
+        for allowed_service in app_settings.SERVICES:
+            if service.startswith(allowed_service):
+                break
+        else:
+            scheme, domain, x, x, x, x = urlparse.urlparse(service)
+            try:
+                cas_service = models.CasService.get(domain=domain)
+            except models.CasService.DoesNotExist:
+                self.failure(request, 'service %r is not allowed' % service)
         return self.handle_login(request, cas_service, service, renew, gateway)
 
     def must_authenticate(self, request, renew):
@@ -171,7 +170,8 @@ renew:%s and gateway:%s' % (service, renew, gateway))
             return self.authenticate(request, st, passive=gateway)
         else:
             st = self.create_service_ticket(service, expire=expire,
-                    user=self.get_cas_user(request))
+                    user=self.get_cas_user(request),
+                    session_key=request.session.session_key)
             return self.handle_login_after_authentication(request, st)
 
     def cas_failure(self, request, st, reason):
@@ -228,6 +228,7 @@ renew:%s and gateway:%s' % (service, renew, gateway))
             # normal login
             st.user = self.get_cas_user(request)
             st.validity = True
+            st.session_key = request.session.session_key
             st.save()
         return self.handle_login_after_authentication(request, st)
 
@@ -385,7 +386,12 @@ renew:%s and gateway:%s' % (service, renew, gateway))
             return self.cas20_error(INTERNAL_ERROR)
 
     def logout(self, request):
-        return HttpResponseRedirect(settings.LOGOUT_URL)
+        url = request.REQUEST.get('url')
+        logout_url = settings.LOGOUT_URL
+        if url:
+            logout_url = utils.url_add_parameters(logout_url,
+                    next=url)
+        return HttpResponseRedirect(logout_url)
 
 class Authentic2CasProvider(CasProvider):
     def authenticate(self, request, st, passive=False):
@@ -408,6 +414,7 @@ is possible''')
             ae = AuthenticationEvent.objects.get(nonce=st.ticket_id)
             st.user = ae.who
             st.validity = True
+            st.session_key = request.session.session_key
             st.save()
             return True
         except AuthenticationEvent.DoesNotExist:

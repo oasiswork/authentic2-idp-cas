@@ -7,7 +7,6 @@ from django.http import HttpResponseRedirect, HttpResponseBadRequest, \
     HttpResponse, HttpResponseNotAllowed
 from django.core.urlresolvers import reverse
 from django.contrib.auth.views import redirect_to_login
-from django.utils.http import urlquote, urlencode
 from django.conf.urls import patterns, url
 from django.conf import settings
 
@@ -20,49 +19,12 @@ from constants import SERVICE_PARAM, RENEW_PARAM, GATEWAY_PARAM, ID_PARAM, \
     CAS10_VALIDATION_FAILURE, CAS10_VALIDATION_SUCCESS, PGT_URL_PARAM, \
     INVALID_REQUEST_ERROR, INVALID_TICKET_ERROR, INVALID_SERVICE_ERROR, \
     INTERNAL_ERROR, CAS20_VALIDATION_FAILURE, \
-    CAS_NAMESPACE, USER_ELT, SERVICE_RESPONSE_ELT, AUTHENTICATION_SUCCESS_ELT
+    CAS_NAMESPACE, USER_ELT, SERVICE_RESPONSE_ELT, AUTHENTICATION_SUCCESS_ELT, \
+    SAML_RESPONSE_TEMPLATE, ATTRIBUTES_ELT
 
 from . import models, utils, app_settings
 
 logger = logging.getLogger(__name__)
-
-SAML_RESPONSE_TEMPLATE = '''<?xml version="1.0" encoding="UTF-8"?>
-<SOAP-ENV:Envelope SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-<SOAP-ENV:Header/>
-<SOAP-ENV:Body>
-<Response xmlns="urn:oasis:names:tc:SAML:1.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:1.0:assertion" xmlns:samlp="urn:oasis:names:tc:SAML:1.0:protocol" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" IssueInstant="2013-05-16T16:07:35Z" MajorVersion="1" MinorVersion="1" Recipient="https://amonecole.monreseau.lan/webcalendar/login.php" ResponseID="{reponse_id}">
-  <Status>
-    <StatusCode Value="samlp:Success">
-    </StatusCode>
-  </Status>
-  <Assertion xmlns="urn:oasis:names:tc:SAML:1.0:assertion" AssertionID="{assertion_id}" IssueInstant="{issue_instant}" Issuer="{issuer}" MajorVersion="1" MinorVersion="1">
-<Conditions NotBefore="{not_before}" NotOnOrAfter="{not_on_or_after}">
-      <AudienceRestrictionCondition>
-        <Audience>{audience}</Audience>
-      </AudienceRestrictionCondition>
-    </Conditions>
-    <AttributeStatement>
-      <Subject>
-        <NameIdentifier>{name_id}</NameIdentifier>
-        <SubjectConfirmation>
-          <ConfirmationMethod>urn:oasis:names:tc:SAML:1.0:cm:artifact</ConfirmationMethod>
-        </SubjectConfirmation>
-      </Subject>
-      {attributes}
-
-    </AttributeStatement>
-    <AuthenticationStatement AuthenticationInstant="{authentication_instant}" AuthenticationMethod="{authentication_method}">
-      <Subject>
-        <NameIdentifier>{name_id}</NameIdentifier>
-        <SubjectConfirmation>
-          <ConfirmationMethod>urn:oasis:names:tc:SAML:1.0:cm:artifact</ConfirmationMethod>
-        </SubjectConfirmation>
-      </Subject>
-    </AuthenticationStatement>
-  </Assertion>
-</Response>
-</SOAP-ENV:Body>
-</SOAP-ENV:Envelope>'''
 
 class CasProvider(object):
     def get_url(self):
@@ -121,10 +83,10 @@ class CasProvider(object):
         else:
             scheme, domain, x, x, x, x = urlparse.urlparse(service)
             try:
-                cas_service = models.CasService.get(domain=domain)
+                models.CasService.objects.get(domain=domain)
             except models.CasService.DoesNotExist:
-                self.failure(request, 'service %r is not allowed' % service)
-        return self.handle_login(request, cas_service, service, renew, gateway)
+                return self.failure(request, 'service %r is not allowed' % service)
+        return self.handle_login(request, service, renew, gateway)
 
     def must_authenticate(self, request, renew):
         '''Does the user needs to authenticate ?
@@ -143,7 +105,7 @@ class CasProvider(object):
         '''
         return request.user.username
 
-    def handle_login(self, request, cas_service, service, renew, gateway,
+    def handle_login(self, request, service, renew, gateway,
             duration=None):
         '''
            Handle a login request
@@ -279,11 +241,9 @@ renew:%s and gateway:%s' % (service, renew, gateway))
                 content_type='text/xml')
 
     def get_attributes(self, request, st):
-        # XXX: st.service contains the requesting service URL, use it to match CAS attribute policy
-        return {}, False
+        return request.user.username, {}
 
-    def saml_build_attributes(self, request, st):
-        attributes, section = self.get_attributes(request, st)
+    def saml_build_attributes(self, request, st, attributes):
         result = []
         for key, value in attributes.iteritems():
             key = key.encode('utf-8')
@@ -311,6 +271,7 @@ renew:%s and gateway:%s' % (service, renew, gateway))
             st = None
         if st is None or not st.valid():
             return self.saml_error(request, INVALID_TICKET_ERROR)
+        username, attributes = self.get_attributes(request, st)
         new_id = self.generate_id()
 
         ctx = {
@@ -321,31 +282,27 @@ renew:%s and gateway:%s' % (service, renew, gateway))
                 'not_before': '', # XXX: issue time - lag
                 'not_on_or_after': '', # XXX issue time + lag,
                 'audience': st.service.encode('utf-8'),
-                'name_id': request.user.username,
-                'attributes': self.saml_build_attributes(request, st),
+                'name_id': unicode(username).encode('utf-8'),
+                'attributes': self.saml_build_attributes(request, st, attributes),
         }
         return HttpResponse(SAML_RESPONSE_TEMPLATE.format(**ctx),
                 content_type='text/xml')
 
     def service_validate_success_response(self, request, st):
-        attributes, section = self.get_attributes(request, st)
+        username, attributes = self.get_attributes(request, st)
         try:
             ET.register_namespace('cas', 'http://www.yale.edu/tp/cas')
         except AttributeError:
             ET._namespace_map['http://www.yale.edu/tp/cas'] = 'cas'
         root = ET.Element('{%s}%s' % (CAS_NAMESPACE, SERVICE_RESPONSE_ELT))
         success = ET.SubElement(root, '{%s}%s' % (CAS_NAMESPACE, AUTHENTICATION_SUCCESS_ELT))
+        user = ET.SubElement(success, '{%s}%s' % (CAS_NAMESPACE, USER_ELT))
+        user.text = unicode(username)
         if attributes:
-            if section == 'default':
-                user = success
-            else:
-                user = ET.SubElement(success, '{%s}%s' % (CAS_NAMESPACE, section))
+            container = ET.SubElement(success, '{%s}%s' % (CAS_NAMESPACE, ATTRIBUTES_ELT))
             for key, value in attributes.iteritems():
-                elt = ET.SubElement(user, '{%s}%s' % (CAS_NAMESPACE, key))
+                elt = ET.SubElement(container, '{%s}%s' % (CAS_NAMESPACE, key))
                 elt.text = unicode(value)
-        else:
-            user = ET.SubElement(success, '{%s}%s' % (CAS_NAMESPACE, USER_ELT))
-            user.text = unicode(st.user)
         return HttpResponse(ET.tostring(root, encoding='utf8'),
                 content_type='text/xml')
 
@@ -383,7 +340,7 @@ renew:%s and gateway:%s' % (service, renew, gateway))
             return self.service_validate_success_response(request, st)
         except Exception:
             logger.exception('error in cas:service_validate')
-            return self.cas20_error(INTERNAL_ERROR)
+            return self.cas20_error(request, INTERNAL_ERROR)
 
     def logout(self, request):
         url = request.REQUEST.get('url')
@@ -395,19 +352,10 @@ renew:%s and gateway:%s' % (service, renew, gateway))
 
 class Authentic2CasProvider(CasProvider):
     def authenticate(self, request, st, passive=False):
-        next = '%s?id=%s' % (reverse(self.continue_cas),
-                urlquote(st.ticket_id))
-        if passive:
-            if getattr(settings, 'AUTH_SSL', False):
-                query = { 'next': next,
-                    'nonce': st.ticket_id }
-                return HttpResponseRedirect('%s?%s' %
-                        (reverse('user_signin_ssl'), urlencode(query)))
-            else:
-                return self.cas_failure(request, st, 
-                    '''user needs to login and no passive authentication \
-is possible''')
-        return auth2_redirect_to_login(request, next=next, nonce=st.ticket_id)
+        next_url = utils.url_add_parameters(reverse(self.continue_cas),
+                id=st.sticket_id)
+        return auth2_redirect_to_login(request, next=next_url,
+                nonce=st.ticket_id)
 
     def check_authentication(self, request, st):
         try:

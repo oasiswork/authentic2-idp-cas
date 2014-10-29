@@ -24,6 +24,7 @@ class CasTicket(models.Model):
 
     def valid(self):
         return self.validity and not self.expired()
+    valid.boolean = True
 
     def expired(self):
         '''Check if the given CAS ticket has expired'''

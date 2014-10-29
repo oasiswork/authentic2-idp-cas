@@ -12,6 +12,10 @@ class Plugin(object):
     def get_apps(self):
         return [__name__]
 
+    def get_admin_modules(self):
+        from . import dashboard
+        return dashboard.get_admin_modules()
+
     def logout_list(self, request):
         fragments = []
         for name, logout in utils.get_logout_urls(request):

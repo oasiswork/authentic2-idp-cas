@@ -353,7 +353,7 @@ renew:%s and gateway:%s' % (service, renew, gateway))
 class Authentic2CasProvider(CasProvider):
     def authenticate(self, request, st, passive=False):
         next_url = utils.url_add_parameters(reverse(self.continue_cas),
-                id=st.sticket_id)
+                id=st.ticket_id)
         return auth2_redirect_to_login(request, next=next_url,
                 nonce=st.ticket_id)
 
